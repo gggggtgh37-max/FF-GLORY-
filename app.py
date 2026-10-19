@@ -362,6 +362,17 @@ _team_state = {
     "lock": asyncio.Lock(),
 }
 
+async def _reset_team_state():
+    """Clear squad state for fresh team formation on reconnect/restart."""
+    async with _team_state["lock"]:
+        _team_state["peers"].clear()
+        _team_state["leader_uid"] = None
+        _team_state["team_code"] = None
+        _team_state["pk_code"] = None
+    async with _team_state["members_lock"]:
+        _team_state["members"].clear()
+    print_info(f"[TEAM] ✨ Squad state cleared for fresh start")
+
 
 def _team_acc_id(account_data, fallback="") -> str:
     """Always use Free Fire game account_id for team tracking (not guest login uid)."""
@@ -431,6 +442,19 @@ async def _team_purge_dead_peers():
     if dead:
         print_warning(f"[TEAM] purged {len(dead)} dead peers, live={len(_team_state['peers'])}/{TEAM_SIZE}")
     return len(dead)
+
+async def _team_count_live_peers():
+    """Count only peers with open (non-closing) TCP writers."""
+    live_count = 0
+    async with _team_state["lock"]:
+        for pid, info in _team_state["peers"].items():
+            w = info.get("writer")
+            try:
+                if w and not w.is_closing():
+                    live_count += 1
+            except Exception:
+                pass
+    return live_count
 
 
 
@@ -1801,6 +1825,9 @@ async def functional_battle_royale(addrs, starter_packet, account_region, client
     _team_active = {"flag": True}
     _team_id_ref = {"id": _team_acc_id(account_data, account_id)}
 
+    # ⭐ IMPORTANT: Clear stale squad state from previous runs
+    await _reset_team_state()
+
     async def trigger_post_match_refresh():
         await asyncio.sleep(EXP_REFRESH_AFTER_MATCH_DELAY)
         try:
@@ -1812,6 +1839,7 @@ async def functional_battle_royale(addrs, starter_packet, account_region, client
     async def _team_coordinator():
         try:
             my_team_id = _team_acc_id(current_account_data, uid_str)
+            print_info(f"[TEAM] 📋 Coordinator started for {my_team_id}")
             deadline = time.time() + TEAM_PEER_WAIT_TIMEOUT
             while time.time() < deadline:
                 async with _team_state["lock"]:
@@ -1832,11 +1860,13 @@ async def functional_battle_royale(addrs, starter_packet, account_region, client
                 is_in_squad = my_team_id in _team_state["peers"]
 
             if not is_in_squad:
-                print_info(f"[TEAM] {my_team_id} not in current squad, skip coord")
+                print_warning(f"[TEAM] {my_team_id} not in current squad, skip coord")
                 return
             if not is_leader:
-                print_info(f"[TEAM] {my_team_id} waiting as member...")
+                print_info(f"[TEAM] {my_team_id} waiting as member (leader is {_team_state.get('leader_uid')})")
                 return
+            else:
+                print_success(f"[TEAM] 👑 {my_team_id} IS LEADER — proceeding with team coordination")
             if n < TEAM_SIZE:
                 print_warning(f"[TEAM] Only {n}/{TEAM_SIZE} peers — waiting longer for glory squad")
                 # Extra wait for more peers before inviting
@@ -1888,15 +1918,29 @@ async def functional_battle_royale(addrs, starter_packet, account_region, client
 
             try:
                 pkt = create_team(current_key, current_iv, client_version)
-                if _writer_ref["w"] and not _writer_ref["w"].is_closing():
-                    _writer_ref["w"].write(pkt); await _writer_ref["w"].drain()
-                    print_info(f"[TEAM] create_team sent ({len(pkt)}B)")
-                    await _team_member_reset(keep_leader=False)
-                    await _team_member_join(str(my_team_id))
+                if not (_writer_ref["w"] and not _writer_ref["w"].is_closing()):
+                    print_error(f"[TEAM] ❌ create_team FAIL: writer closed/None")
+                    return
+                _writer_ref["w"].write(pkt); await _writer_ref["w"].drain()
+                print_success(f"[TEAM] ✅ create_team sent ({len(pkt)}B)")
+                await _team_member_reset(keep_leader=False)
+                await _team_member_join(str(my_team_id))
             except Exception as e:
-                print_error(f"[TEAM] create_team: {e}")
+                print_error(f"[TEAM] ❌ create_team CRASH: {e}")
+                traceback.print_exc()
+                return
 
             await asyncio.sleep(TEAM_CREATE_WAIT)
+
+            # Send ready BEFORE invites
+            try:
+                if _writer_ref["w"] and not _writer_ref["w"].is_closing():
+                    rdy_pkt = ready_for_game(int(own_id_num or my_team_id), current_key, current_iv)
+                    _writer_ref["w"].write(rdy_pkt); await _writer_ref["w"].drain()
+                    print_info(f"[TEAM] ready sent (pre-invite)")
+            except Exception as e:
+                print_warning(f"[TEAM] ready pre-invite err: {e}")
+            await asyncio.sleep(0.5)
 
             peer_uids = []
             for peer_uid, info in peers_snapshot.items():
@@ -2214,10 +2258,14 @@ async def functional_battle_royale(addrs, starter_packet, account_region, client
                 _team_id_ref["id"] = team_id
                 # Drop closed writers so "Squad full" is not stuck on dead peers
                 await _team_purge_dead_peers()
+                # Check LIVE peers only, not dead/closed connections
+                live_peer_count = await _team_count_live_peers()
+                in_squad = False
                 async with _team_state["lock"]:
                     # Cap squad at TEAM_SIZE for glory; if full of live peers, still play via FORCE
-                    if team_id not in _team_state["peers"] and len(_team_state["peers"]) >= TEAM_SIZE:
-                        print_info(f"[TEAM] Squad full ({TEAM_SIZE}) — {team_id} plays via FORCE (next squad)")
+                    if team_id not in _team_state["peers"] and live_peer_count >= TEAM_SIZE:
+                        print_info(f"[TEAM] Squad full ({TEAM_SIZE}, {live_peer_count} live) — {team_id} plays via FORCE (next squad)")
+                        in_squad = False
                     else:
                         _team_state["peers"][team_id] = {
                             "writer": writer, "data": current_account_data,
@@ -2227,9 +2275,11 @@ async def functional_battle_royale(addrs, starter_packet, account_region, client
                             _team_state["leader_uid"] = team_id
                             print_success(f"[TEAM] 👑 {team_id} is leader (label={uid_str})")
                         else:
-                            print_info(f"[TEAM] peer {team_id} online ({len(_team_state['peers'])}/{TEAM_SIZE})")
+                            print_info(f"[TEAM] peer {team_id} online ({live_peer_count+1}/{TEAM_SIZE})")
+                        in_squad = True
 
-                if TEAM_MODE:
+                # ONLY create coordinator if player is actually in squad (not FORCE)
+                if TEAM_MODE and in_squad:
                     team_coord_task = asyncio.create_task(_team_coordinator())
                     member_trigger_task = asyncio.create_task(_member_match_trigger())
                 else:
