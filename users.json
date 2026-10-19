@@ -1,0 +1,21 @@
+{
+  "tufan_ff": {
+    "username": "tufan_ff",
+    "display_name": "TUFAN_FF",
+    "password_hash": "70c6f3dd32fe2851775dc63330d7b472$192205e12eb0284f84abd817ef2f87af397a555cca1719be894173a2fff8e0f7",
+    "role": "admin",
+    "basic_credits": 1000,
+    "premium_credits": 100,
+    "created_at": 1792300217.498904,
+    "seeded": true
+  },
+  "tufan96": {
+    "username": "tufan96",
+    "display_name": "TUFAN96",
+    "password_hash": "84b25d81a6051fed71ec93e6e70a6934$2ffa84e1f66e474de193ab8e39cf7d9e8f6116a6546490cf2227aae2ec1d61f1",
+    "role": "user",
+    "basic_credits": 92,
+    "premium_credits": 99,
+    "created_at": 1792303410.9266798
+  }
+}
