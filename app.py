@@ -52,8 +52,8 @@ NON_MATCH_RECONNECT_DELAY      = 1.0
 BR_MODE_ID             = 1
 BR_MAP_ID              = 1
 
-ANTI_AFK_MIN_INTERVAL  = 1.8
-ANTI_AFK_MAX_INTERVAL  = 3.5
+ANTI_AFK_MIN_INTERVAL  = 4.0
+ANTI_AFK_MAX_INTERVAL  = 9.0
 
 MATCH_SEARCH_TIMEOUT   = 60.0
 MATCH_WATCHDOG_CHECK   = 30.0
@@ -69,23 +69,23 @@ BYPASS_PACKET_JITTER  = True
 BYPASS_HELLO_DELAY    = True
 BYPASS_KA_JITTER      = True
 
-ENABLE_SPEED_MOVEMENT       = True
-MOVEMENT_SPEED_MIN          = 1.0
-MOVEMENT_SPEED_MAX          = 1.4
+ENABLE_SPEED_MOVEMENT       = False
+MOVEMENT_SPEED_MIN          = 0.85
+MOVEMENT_SPEED_MAX          = 1.05
 MOVEMENT_PATTERN            = "circle"
-MOVEMENT_TICK_MS            = 240
-MOVEMENT_RADIUS             = 180
-MOVEMENT_UPDATE_SPEED_EVERY = 4.0
-MOVEMENT_STATE_IDLE_CHANCE   = 0.10
-MOVEMENT_STATE_WALK_CHANCE   = 0.28
-MOVEMENT_STATE_RUN_CHANCE    = 0.32
-MOVEMENT_STATE_SPRINT_CHANCE = 0.10
-MOVEMENT_STATE_JUMP_CHANCE   = 0.08
-MOVEMENT_STATE_CROUCH_CHANCE = 0.06
-MOVEMENT_STATE_PRONE_CHANCE  = 0.06
+MOVEMENT_TICK_MS            = 320
+MOVEMENT_RADIUS             = 90
+MOVEMENT_UPDATE_SPEED_EVERY = 12.0
+MOVEMENT_STATE_IDLE_CHANCE   = 0.22
+MOVEMENT_STATE_WALK_CHANCE   = 0.40
+MOVEMENT_STATE_RUN_CHANCE    = 0.22
+MOVEMENT_STATE_SPRINT_CHANCE = 0.05
+MOVEMENT_STATE_JUMP_CHANCE   = 0.03
+MOVEMENT_STATE_CROUCH_CHANCE = 0.05
+MOVEMENT_STATE_PRONE_CHANCE  = 0.03
 
 ENABLE_HTTP_PING = True
-PING_INTERVAL    = 20.0
+PING_INTERVAL    = 45.0
 PING_TIMEOUT     = 8.0
 PING_URL         = "https://loginbp.ppmainecoonghj.com/Ping"
 PING_REAL_IP     = "103.109.214.211"
@@ -96,18 +96,20 @@ FALLBACK_PASSWORD = ""
 # ═══════════════════════════ SQUAD CONFIG ═══════════════════════════
 TEAM_MODE               = True
 TEAM_SIZE               = 4
+ENFORCE_SQUAD_SIZE      = True
+NO_SOLO_MATCHES         = True
 TEAM_PEER_WAIT_TIMEOUT  = 120.0
 TEAM_CREATE_WAIT        = 4.0
-TEAM_INVITE_CYCLE_WAIT  = 3.0
+TEAM_INVITE_CYCLE_WAIT  = 6.0
 TEAM_INVITE_MAX_TIME    = 150.0
-TEAM_HEARTBEAT_INTERVAL = 3.0
+TEAM_HEARTBEAT_INTERVAL = 8.0
 TEAM_IDLE_ITERS_TEAM    = 1800
 TEAM_MEMBER_START_DELAY = 8.0
 TEAM_FINAL_WAIT         = 8.0
 TEAM_SIZE = 4
 TEAM_READY_DELAY = 3.0
 _accept_friend_request = True
-DEBUG_TEAM_PACKETS      = True
+DEBUG_TEAM_PACKETS      = False
 
 
 # ═══════════════════════════ ANTI-BAN ═══════════════════════════
@@ -129,7 +131,7 @@ def bypass_ka_jitter(base=5.0):
 
 def bypass_human_reconnect_delay(attempt):
     if not (SAFE_PLAY_MODE and BYPASS_TIMING_JITTER): return min(attempt * 0.5, 2.0)
-    return max(0.05, min(attempt * 0.5, 2.0) + random.uniform(-0.4, 0.7))
+    return max(2.0, min(attempt * 3.0, 25.0) + random.uniform(0.5, 4.0))
 
 
 # ═══════════════════════════ DEVICE ═══════════════════════════
@@ -362,17 +364,6 @@ _team_state = {
     "lock": asyncio.Lock(),
 }
 
-async def _reset_team_state():
-    """Clear squad state for fresh team formation on reconnect/restart."""
-    async with _team_state["lock"]:
-        _team_state["peers"].clear()
-        _team_state["leader_uid"] = None
-        _team_state["team_code"] = None
-        _team_state["pk_code"] = None
-    async with _team_state["members_lock"]:
-        _team_state["members"].clear()
-    print_info(f"[TEAM] ✨ Squad state cleared for fresh start")
-
 
 def _team_acc_id(account_data, fallback="") -> str:
     """Always use Free Fire game account_id for team tracking (not guest login uid)."""
@@ -442,19 +433,6 @@ async def _team_purge_dead_peers():
     if dead:
         print_warning(f"[TEAM] purged {len(dead)} dead peers, live={len(_team_state['peers'])}/{TEAM_SIZE}")
     return len(dead)
-
-async def _team_count_live_peers():
-    """Count only peers with open (non-closing) TCP writers."""
-    live_count = 0
-    async with _team_state["lock"]:
-        for pid, info in _team_state["peers"].items():
-            w = info.get("writer")
-            try:
-                if w and not w.is_closing():
-                    live_count += 1
-            except Exception:
-                pass
-    return live_count
 
 
 
@@ -549,43 +527,58 @@ async def aes_encrypt(payload, key, iv):
 
 async def get_playstore_version():
     loop = asyncio.get_event_loop()
-    res = await loop.run_in_executor(None, lambda: play_scraper('com.dts.freefireth', lang='hi', country='id'))
+    res = await loop.run_in_executor(None, lambda: play_scraper('com.dts.freefiremax', lang='hi', country='in'))
     return res.get("version")
 
 async def version_config():
-    """Cached version config so 150 accounts don't hammer the version API."""
+    """Cached version config — FF MAX 2.133.1 / OB55 (from live capture 2026-10-25)."""
     global _version_config_cache, _version_config_ts
     now = time.time()
     if _version_config_cache is not None and (now - _version_config_ts) < VERSION_CONFIG_TTL:
         return _version_config_cache
+    app_version = "2.133.1"
     try:
-        app_version = await get_playstore_version()
+        app_version = await get_playstore_version() or "2.133.1"
     except Exception as e:
         print_error(f"[VERSION] playstore scrape failed: {e}")
-        app_version = "1.132.8"
-    # Prefer IND region endpoint for India accounts; fallback ID
+        app_version = "2.133.1"
+    # Capture hostnames (FF MAX IND)
     urls = [
-        ("https://version.ggwhitehawk.com/live/ver.php"
+        (f"https://version.ffmax.purplevioleto.com/live/ver.php"
          f"?version={app_version}&lang=hi&device=android&channel=android"
-         "&appstore=googleplay&region=IND&whitelist_version=1.3.0&whitelist_sp_version=1.0.0"),
-        ("https://version.ggwhitehawk.com/live/ver.php"
+         f"&appstore=googleplay&region=IND&whitelist_version=1.3.0&whitelist_sp_version=1.0.0"),
+        (f"https://version.ggwhitehawk.com/live/ver.php"
          f"?version={app_version}&lang=hi&device=android&channel=android"
-         "&appstore=googleplay&region=ID&whitelist_version=1.3.0&whitelist_sp_version=1.0.0"),
+         f"&appstore=googleplay&region=IND&whitelist_version=1.3.0&whitelist_sp_version=1.0.0"),
+        (f"https://version.ggwhitehawk.com/live/ver.php"
+         f"?version={app_version}&lang=hi&device=android&channel=android"
+         f"&appstore=googleplay&region=ID&whitelist_version=1.3.0&whitelist_sp_version=1.0.0"),
     ]
     for url in urls:
         try:
             r = await client.get(url)
             r.raise_for_status()
             d = r.json()
-            su = d.get("server_url"); rv = d.get("remote_version"); lr = d.get("latest_release_version")
-            if su and rv and lr:
+            su = d.get("server_url")
+            rv = d.get("remote_version")
+            lr = d.get("latest_release_version") or "OB55"
+            # MAX ver API sometimes returns code=2 without server_url — use loginbp fallback
+            if not su:
+                su = "https://loginbp.ppmainecoonghj.com/"
+            if not rv:
+                rv = app_version
+            if su and lr:
                 _version_config_cache = (lr, rv, su)
                 _version_config_ts = time.time()
+                print_info(f"[VERSION] MAX {app_version} release={lr} server={su}")
                 return _version_config_cache
         except Exception as e:
             print_error(f"[VERSION] {e}")
             continue
-    return _version_config_cache  # last known good if any
+    # Hard fallback from capture
+    _version_config_cache = ("OB55", "2.133.1", "https://loginbp.ppmainecoonghj.com/")
+    _version_config_ts = time.time()
+    return _version_config_cache
 
 async def get_access_token(uid, password):
     url = "https://100067.connect.garena.com/oauth/guest/token/grant"
@@ -786,44 +779,49 @@ def create_packet(Pk, N, K, V):
 
 
 # ═══════════ SQUAD PACKETS ═══════════
-def create_team(key, iv, game_version="1.132.9"):
+def create_team(key, iv, game_version="2.133.1", region="IND", leader_uid=0):
+    reg = (region or "IND").upper()
+    if reg in ("IN", "IND", "ID"):
+        server_code, reg_out = "IDC3", "IND"
+    else:
+        server_code, reg_out = "IDC3", reg
     fields = {
         1: 1, 2: {2: bytes.fromhex("01"), 3: 1, 4: 3, 5: "en",
-            8: {1: "IDC3", 2: 123, 3: "ID"}, 9: 1,
+            8: {1: server_code, 2: 123, 3: reg_out}, 9: 1,
             10: bytes.fromhex("01090a0b1219202729"), 11: 2, 13: 1,
             14: {1: "08FBA33B4BABE2790205390333330000009700050092005F72697EB2134DCBB2467625142201040e38e848dc0e748c3f6aa04d81000000ff1113090dcacfa16d",
                  2: 478, 3: "7e585d55", 4: "y[Z]", 6: 12, 7: "15686677735a7506101c",
                  8: str(game_version), 9: 3, 10: 1, 11: "03626253513637754174"},
             19: 329, 21: bytes.fromhex("374f521955"), 24: {1: 21},
             27: "a_6534489873065906362"}}
-    return create_packet(create_proto(fields).hex(), "0515", key, iv)
+    return create_packet(create_proto(fields).hex(), "0514", key, iv)
 
 def team_fresh(account_id, key, iv):
-    return create_packet(create_proto({1: 72, 2: {1: int(account_id)}}).hex(), "0515", key, iv)
+    return create_packet(create_proto({1: 72, 2: {1: int(account_id)}}).hex(), "0514", key, iv)
 
-def invite_player_in_team(target_uid, key, iv, region="ID"):
+def invite_player_in_team(target_uid, key, iv, region="IND"):
     return create_packet(create_proto({1: 2, 2: {1: int(target_uid), 2: region, 4: 1}}).hex(),
-                         "0515", key, iv)
+                         "0514", key, iv)
 
 def accept_team_invite(target_uid, group_id, key, iv):
     fields = {1: 4, 2: {1: int(target_uid), 3: int(target_uid),
         4: bytes.fromhex("0107090a0b120f19202729"), 8: 1,
         9: {1: "08FBA33B0522052002041B0222220007000C00010004000547E265AE1080779546762514110104076fa2e8770e748c3f6a68ed75000000ff08080500cacfa16d",
             2: 235, 3: {14: 80, 11: 86}, 4: "{Y\\R", 6: 13, 7: {2: 4},
-            8: "1.132.9", 9: 2, 10: 1, 11: "0362625351"},
+            8: "2.133.1", 9: 2, 10: 1, 11: "0362625351"},
         10: str(group_id),
-        11: {"1": "IDC3", "2": 107, "3": "ID"}, 13: "en", 16: "374f5219",
+        11: {"1": "IDC3", "2": 107, "3": "IND"}, 13: "en", 16: "374f5219",
         20: {1: 21}, 23: "a_6534489873065906362",
-        24: "https://dl-sg-production.freefiremobile.com/",
+        24: "https://dl-tata.freefireind.in/",
         27: {1: 2, 2: 4}}}
-    return create_packet(create_proto(fields).hex(), "0515", key, iv)
+    return create_packet(create_proto(fields).hex(), "0514", key, iv)
 
-def start_match_team(account_id, key, iv, region="ID"):
+def start_match_team(account_id, key, iv, region="IND"):
     fields = {1: 9, 2: {1: int(account_id), 7: {1: "IDC3", 2: 410, 3: region}}}
-    return create_packet(create_proto(fields).hex(), "0515", key, iv)
+    return create_packet(create_proto(fields).hex(), "0514", key, iv)
 
 def ready_for_game(uid, key, iv):
-    return create_packet(create_proto({1: 15, 2: {1: uid, 2: 1}}).hex(), "0519", key, iv)
+    return create_packet(create_proto({1: 15, 2: {1: int(uid), 2: 1}}).hex(), "0f14", key, iv)
 
 
 # ═══════════════════════════ MAJORLOGIN / GETLOGIN ═══════════════════════════
@@ -831,7 +829,7 @@ async def build_majorlogin_payload(open_id, access_token, platform, client_versi
     try:
         p = {
             3: str(datetime.now())[:-7], 4: "free fire", 5: "1",
-            7: str(client_version) if client_version else "1.132.8",
+            7: str(client_version) if client_version else "2.133.1",
             8: str(dev.get("system_software", "Android OS 14 / API-34")),
             9: "Handheld", 10: "Telkomsel", 11: "CarrierDataNetwork",
             12: str(dev.get("screen_width", 1639)),
@@ -858,7 +856,7 @@ async def build_majorlogin_payload(open_id, access_token, platform, client_versi
             95: "111207", 96: "{\"cur_rate\":[60,90,120],\"support_etc2\":true}", 97: "1",
             98: "1", 99: str(platform), 100: str(platform),
             103: "1", 104: "52837", 105: "1",
-            106: "https://dl.gmc.freefiremobile.com/live/ABHotUpdates/|211c933168f55902c7dfbfd8c4e2957d",
+            106: "https://dl-tata.freefireind.in/live/ABHotUpdates/|211c933168f55902c7dfbfd8c4e2957d",
             107: "1.3fb8adbf45f44ce9",
         }
         return encrypt_api_bytes(build_proto(p))
@@ -889,7 +887,7 @@ async def send_getlogin(data, base_url, token, release_version):
         hdrs = headers.copy()
         hdrs["ReleaseVersion"] = release_version
         hdrs['Authorization'] = f"Bearer {token}"
-        hdrs['Host'] = "clientbp.ppmainecoonghj.com"
+        hdrs['Host'] = "loginbp.ppmainecoonghj.com"
         r = await client.post(url, headers=hdrs, data=data)
         if r.status_code != 200: return None
         c = r.content
@@ -1262,7 +1260,7 @@ async def decode_packet(packet, key, mask=None):
     return candidates[0]
 
 async def build_match_startup_packets(token, udp_key, match_code, account_id, block_val,
-                                      server_ip="", region="ID", client_version="1.132.6",
+                                      server_ip="", region="ID", client_version="2.133.1",
                                       client_version_code="2019121229", access_token="",
                                       mode_id=BR_MODE_ID, map_id=BR_MAP_ID):
     token = token.strip()
@@ -1364,21 +1362,61 @@ class MovementTracker:
         elif r < cc: return "crouch", random.uniform(1.2, 2.5)
         else: return "prone", random.uniform(1.5, 3.5)
     def _generate_movement(self):
-        p = (self.pattern or "circle").lower()
-        x = y = z = 0; ms = 0
+        """Patterns from live FF MAX movement capture (UDP ~180ms ticks)."""
+        p = (self.pattern or "full").lower()
+        x = y = z = 0
+        ms = 0x0F
+        r = self.radius
         if p == "circle":
-            self.angle += 0.35 * self.dir_flip
+            self.angle += 0.40 * self.dir_flip
             if self.angle > 6.2832: self.angle -= 6.2832
             elif self.angle < 0: self.angle += 6.2832
-            x = int(self.radius * random.uniform(0.9, 1.1) * (1.0 if self.angle % 3.14 < 1.57 else -1.0))
-            y = int(self.radius * random.uniform(0.4, 0.6))
-            z = int(self.radius * random.uniform(0.9, 1.1) * (1.0 if self.angle % 6.28 < 3.14 else -1.0))
+            x = int(r * math.cos(self.angle))
+            y = int(r * 0.35 * math.sin(self.angle * 2))
+            z = int(r * math.sin(self.angle))
             ms = 0x0F
-        else:
-            x = random.randint(-self.radius, self.radius)
-            y = random.randint(-40, 40)
-            z = random.randint(-self.radius, self.radius)
+        elif p == "zigzag":
+            self.angle += 0.55 * self.dir_flip
+            t = self.tick % 40
+            if t < 20:
+                x = int(r * 0.8); z = int((t - 10) * r / 12)
+            else:
+                x = int(-r * 0.8); z = int((30 - t) * r / 12)
+            y = random.randint(-30, 50)
+            ms = 0x0F
+        elif p == "square":
+            side = (self.tick // 15) % 4
+            step = (self.tick % 15) / 15.0
+            if side == 0:   x, z = int(r * (2*step-1)), -r
+            elif side == 1: x, z = r, int(r * (2*step-1))
+            elif side == 2: x, z = int(r * (1-2*step)), r
+            else:           x, z = -r, int(r * (1-2*step))
+            y = random.randint(-20, 40)
+            ms = 0x0F
+        elif p == "random":
+            x = random.randint(-r, r)
+            y = random.randint(-50, 60)
+            z = random.randint(-r, r)
             ms = random.choice([0x01, 0x02, 0x04, 0x08, 0x0F])
+        else:
+            # full = mix circle + zigzag + micro jitter (anti AFK strong)
+            mode = (self.tick // 50) % 3
+            if mode == 0:
+                self.angle += 0.42 * self.dir_flip
+                if self.angle > 6.2832: self.angle -= 6.2832
+                x = int(r * math.cos(self.angle))
+                y = int(40 * math.sin(self.angle * 3))
+                z = int(r * math.sin(self.angle))
+            elif mode == 1:
+                t = self.tick % 30
+                x = int(r * (0.9 if t < 15 else -0.9))
+                z = int((t - 15) * r / 10)
+                y = random.randint(-25, 55)
+            else:
+                x = random.randint(-r, r)
+                y = random.randint(-40, 50)
+                z = random.randint(-r, r)
+            ms = 0x0F
         return x, y, z, ms
     def next(self):
         now = time.time()
@@ -1825,9 +1863,6 @@ async def functional_battle_royale(addrs, starter_packet, account_region, client
     _team_active = {"flag": True}
     _team_id_ref = {"id": _team_acc_id(account_data, account_id)}
 
-    # ⭐ IMPORTANT: Clear stale squad state from previous runs
-    await _reset_team_state()
-
     async def trigger_post_match_refresh():
         await asyncio.sleep(EXP_REFRESH_AFTER_MATCH_DELAY)
         try:
@@ -1839,7 +1874,6 @@ async def functional_battle_royale(addrs, starter_packet, account_region, client
     async def _team_coordinator():
         try:
             my_team_id = _team_acc_id(current_account_data, uid_str)
-            print_info(f"[TEAM] 📋 Coordinator started for {my_team_id}")
             deadline = time.time() + TEAM_PEER_WAIT_TIMEOUT
             while time.time() < deadline:
                 async with _team_state["lock"]:
@@ -1860,13 +1894,11 @@ async def functional_battle_royale(addrs, starter_packet, account_region, client
                 is_in_squad = my_team_id in _team_state["peers"]
 
             if not is_in_squad:
-                print_warning(f"[TEAM] {my_team_id} not in current squad, skip coord")
+                print_info(f"[TEAM] {my_team_id} not in current squad, skip coord")
                 return
             if not is_leader:
-                print_info(f"[TEAM] {my_team_id} waiting as member (leader is {_team_state.get('leader_uid')})")
+                print_info(f"[TEAM] {my_team_id} waiting as member...")
                 return
-            else:
-                print_success(f"[TEAM] 👑 {my_team_id} IS LEADER — proceeding with team coordination")
             if n < TEAM_SIZE:
                 print_warning(f"[TEAM] Only {n}/{TEAM_SIZE} peers — waiting longer for glory squad")
                 # Extra wait for more peers before inviting
@@ -1917,30 +1949,16 @@ async def functional_battle_royale(addrs, starter_packet, account_region, client
                 except Exception: own_id_num = 0
 
             try:
-                pkt = create_team(current_key, current_iv, client_version)
-                if not (_writer_ref["w"] and not _writer_ref["w"].is_closing()):
-                    print_error(f"[TEAM] ❌ create_team FAIL: writer closed/None")
-                    return
-                _writer_ref["w"].write(pkt); await _writer_ref["w"].drain()
-                print_success(f"[TEAM] ✅ create_team sent ({len(pkt)}B)")
-                await _team_member_reset(keep_leader=False)
-                await _team_member_join(str(my_team_id))
+                pkt = create_team(current_key, current_iv, client_version, region=str(account_region or "IND").upper())
+                if _writer_ref["w"] and not _writer_ref["w"].is_closing():
+                    _writer_ref["w"].write(pkt); await _writer_ref["w"].drain()
+                    print_info(f"[TEAM] create_team sent ({len(pkt)}B)")
+                    await _team_member_reset(keep_leader=False)
+                    await _team_member_join(str(my_team_id))
             except Exception as e:
-                print_error(f"[TEAM] ❌ create_team CRASH: {e}")
-                traceback.print_exc()
-                return
+                print_error(f"[TEAM] create_team: {e}")
 
             await asyncio.sleep(TEAM_CREATE_WAIT)
-
-            # Send ready BEFORE invites
-            try:
-                if _writer_ref["w"] and not _writer_ref["w"].is_closing():
-                    rdy_pkt = ready_for_game(int(own_id_num or my_team_id), current_key, current_iv)
-                    _writer_ref["w"].write(rdy_pkt); await _writer_ref["w"].drain()
-                    print_info(f"[TEAM] ready sent (pre-invite)")
-            except Exception as e:
-                print_warning(f"[TEAM] ready pre-invite err: {e}")
-            await asyncio.sleep(0.5)
 
             peer_uids = []
             for peer_uid, info in peers_snapshot.items():
@@ -2258,14 +2276,10 @@ async def functional_battle_royale(addrs, starter_packet, account_region, client
                 _team_id_ref["id"] = team_id
                 # Drop closed writers so "Squad full" is not stuck on dead peers
                 await _team_purge_dead_peers()
-                # Check LIVE peers only, not dead/closed connections
-                live_peer_count = await _team_count_live_peers()
-                in_squad = False
                 async with _team_state["lock"]:
                     # Cap squad at TEAM_SIZE for glory; if full of live peers, still play via FORCE
-                    if team_id not in _team_state["peers"] and live_peer_count >= TEAM_SIZE:
-                        print_info(f"[TEAM] Squad full ({TEAM_SIZE}, {live_peer_count} live) — {team_id} plays via FORCE (next squad)")
-                        in_squad = False
+                    if team_id not in _team_state["peers"] and len(_team_state["peers"]) >= TEAM_SIZE:
+                        print_info(f"[TEAM] Squad full ({TEAM_SIZE}) — {team_id} plays via FORCE (next squad)")
                     else:
                         _team_state["peers"][team_id] = {
                             "writer": writer, "data": current_account_data,
@@ -2275,11 +2289,9 @@ async def functional_battle_royale(addrs, starter_packet, account_region, client
                             _team_state["leader_uid"] = team_id
                             print_success(f"[TEAM] 👑 {team_id} is leader (label={uid_str})")
                         else:
-                            print_info(f"[TEAM] peer {team_id} online ({live_peer_count+1}/{TEAM_SIZE})")
-                        in_squad = True
+                            print_info(f"[TEAM] peer {team_id} online ({len(_team_state['peers'])}/{TEAM_SIZE})")
 
-                # ONLY create coordinator if player is actually in squad (not FORCE)
-                if TEAM_MODE and in_squad:
+                if TEAM_MODE:
                     team_coord_task = asyncio.create_task(_team_coordinator())
                     member_trigger_task = asyncio.create_task(_member_match_trigger())
                 else:
